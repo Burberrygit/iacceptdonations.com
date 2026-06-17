@@ -781,10 +781,29 @@ h1 {
 
   .flow {
     grid-template-columns: 1fr;
+    gap: 10px;
   }
 
   .flow span {
-    transform: rotate(90deg);
+    display: none;
+  }
+
+  .flow div {
+    min-height: 92px;
+    padding-bottom: 36px;
+    position: relative;
+  }
+
+  .flow div:not(:last-of-type)::after {
+    bottom: 10px;
+    color: var(--cyan);
+    content: "\2193";
+    font-size: 1.45rem;
+    font-weight: 900;
+    left: 50%;
+    line-height: 1;
+    position: absolute;
+    transform: translateX(-50%);
   }
 
   .downloads-grid {
