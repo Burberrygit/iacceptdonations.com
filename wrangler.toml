@@ -1,0 +1,14 @@
+name = "iacceptdonations-stripe-checkout"
+main = "cloudflare-worker.mjs"
+compatibility_date = "2026-06-16"
+
+[vars]
+SITE_URL = "https://www.iacceptdonations.com"
+ALLOWED_ORIGIN = "https://www.iacceptdonations.com"
+PRODUCT_IMAGE_URL = "https://www.iacceptdonations.com/assets/stripe-money-trash-product-1024.jpg"
+
+# Set this as a Worker secret, not in this file:
+# wrangler secret put STRIPE_SECRET_KEY
+#
+# Recommended route in Cloudflare:
+# https://www.iacceptdonations.com/api/create-checkout-session

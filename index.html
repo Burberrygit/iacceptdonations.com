@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>iAcceptDonations.com</title>
+    <meta
+      name="description"
+      content="A bold new platform dedicated to receiving donations."
+    >
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="icon" href="assets/favicon.png" type="image/png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="hero" aria-labelledby="page-title">
+        <nav class="topbar" aria-label="Main navigation">
+          <a class="brand" href="index.html" aria-label="iAcceptDonations.com home">
+            <img class="brand-icon" src="assets/brand-trash-logo.png" alt="iAcceptDonations.com">
+          </a>
+          <a class="nav-downloads" href="downloads.html">Downloads</a>
+        </nav>
+
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">The art of getting paid without making it awkward</p>
+            <h1 id="page-title">we disrupted revenue by simply asking for it</h1>
+            <p class="lede">
+              Welcome to the world's most direct funding platform. No prototype,
+              no roadmap fog, no confusing rewards tiers. Just the pure exchange
+              of your generosity into our operating account.
+            </p>
+            <div class="hero-actions">
+              <a class="button secondary" href="business-model.html">View Business Model</a>
+            </div>
+          </div>
+
+          <div class="hero-panel">
+            <aside class="donation-card" id="donate" aria-labelledby="donate-title">
+              <div class="card-header">
+                <p class="tiny-label">Series A</p>
+                <h2 id="donate-title">Fund the concept of funding us.</h2>
+              </div>
+
+              <div class="amount-grid" role="group" aria-label="Donation amounts">
+                <button class="amount-button" data-amount="5">$5<span>Moral Support</span></button>
+                <button class="amount-button active" data-amount="25">$25<span>Strategic Believer</span></button>
+                <button class="amount-button" data-amount="100">$100<span>Visionary</span></button>
+                <button class="amount-button" data-amount="500">$500<span>Executive Apology Fund</span></button>
+              </div>
+
+              <label class="custom-label" for="custom-amount">Custom amount</label>
+              <div class="custom-row">
+                <span aria-hidden="true">$</span>
+                <input id="custom-amount" type="number" min="1" step="1" placeholder="Any amount works">
+              </div>
+
+              <p class="gratitude" aria-live="polite">
+                Gratitude level: boardroom nod.
+              </p>
+              <div class="payment-actions" aria-label="Donation payment options">
+                <button class="button donate-button stripe" type="button" data-provider="stripe">
+                  Donate with Stripe
+                </button>
+                <button class="button donate-button paypal" type="button" data-provider="paypal">
+                  Donate with PayPal
+                </button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <div class="toast" role="status" aria-live="polite" hidden>
+      Excellent decision. A payment link can be connected here.
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>

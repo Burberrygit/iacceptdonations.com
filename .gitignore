@@ -1,0 +1,8 @@
+donation-expo-app/
+.DS_Store
+Thumbs.db
+*.log
+.wrangler/
+node_modules/
+assets/garbage.html
+assets/garbage_files/
