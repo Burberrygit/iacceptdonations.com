@@ -10,7 +10,7 @@ Keep hosting at $0/year while still letting Stripe receive the exact amount sele
 - Cloudflare proxies `www.iacceptdonations.com`.
 - Cloudflare Worker handles only `/api/create-checkout-session`.
 - Stripe secret key lives only in Cloudflare Worker secrets.
-- PayPal continues to use the hosted PayPal payment link with the selected amount in the URL.
+- PayPal uses the Cloudflare Worker to create and capture exact-amount orders.
 
 ## Stripe Worker Setup
 
@@ -19,15 +19,20 @@ Keep hosting at $0/year while still letting Stripe receive the exact amount sele
    `https://www.iacceptdonations.com/api/create-checkout-session`
 3. Add the Stripe secret key as a Worker secret:
    `STRIPE_SECRET_KEY`
-4. Keep these Worker variables:
+4. Add PayPal REST app credentials as Worker secrets:
+   - `PAYPAL_CLIENT_ID`
+   - `PAYPAL_CLIENT_SECRET`
+5. Keep these Worker variables:
    - `SITE_URL`: `https://www.iacceptdonations.com`
    - `ALLOWED_ORIGIN`: `https://www.iacceptdonations.com`
    - `PRODUCT_IMAGE_URL`: `https://www.iacceptdonations.com/assets/stripe-money-trash-product-1024.jpg`
+   - `PAYPAL_ENV`: `live`
 
 ## Local Files
 
 - `script.js` calls `/api/create-checkout-session` for Stripe.
-- `cloudflare-worker.mjs` creates a Stripe Checkout Session using the selected amount.
+- `script.js` calls `/api/create-paypal-order` and `/api/capture-paypal-order` for PayPal.
+- `cloudflare-worker.mjs` creates Stripe Checkout Sessions and PayPal Orders using the selected amount.
 - `wrangler.toml` documents the Worker settings.
 
 ## Notes

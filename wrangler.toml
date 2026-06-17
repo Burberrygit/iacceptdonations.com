@@ -12,9 +12,12 @@ run_worker_first = true
 SITE_URL = "https://www.iacceptdonations.com"
 ALLOWED_ORIGIN = "https://www.iacceptdonations.com"
 PRODUCT_IMAGE_URL = "https://www.iacceptdonations.com/assets/stripe-money-trash-product-1024.jpg"
+PAYPAL_ENV = "live"
 
 # Set this as a Worker secret, not in this file:
 # wrangler secret put STRIPE_SECRET_KEY
+# wrangler secret put PAYPAL_CLIENT_ID
+# wrangler secret put PAYPAL_CLIENT_SECRET
 #
 # Recommended route in Cloudflare:
 # https://www.iacceptdonations.com/api/create-checkout-session

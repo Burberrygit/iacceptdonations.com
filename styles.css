@@ -661,17 +661,38 @@ h1 {
 }
 
 @media (max-width: 640px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .hero,
+  .business-hero,
+  .downloads-hero {
+    padding: 16px 16px 42px;
+  }
+
   .topbar {
-    align-items: flex-start;
-    border-radius: 22px;
-    flex-direction: column;
-    gap: 14px;
+    align-items: center;
+    flex-direction: row;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .brand-icon,
+  .brand-logo {
+    height: 52px;
+    max-width: 52px;
+    width: 52px;
   }
 
   .nav-actions {
-    align-items: stretch;
-    flex-direction: column;
-    width: 100%;
+    align-items: center;
+    flex: 1;
+    flex-direction: row;
+    gap: 8px;
+    justify-content: flex-end;
+    min-width: 0;
+    width: auto;
   }
 
   .nav-link {
@@ -679,20 +700,79 @@ h1 {
   }
 
   .nav-donate,
-  .nav-downloads,
+  .nav-downloads {
+    flex: 0 1 auto;
+    font-size: 0.82rem;
+    padding: 9px 12px;
+    white-space: nowrap;
+    width: auto;
+  }
+
   .button {
     width: 100%;
   }
 
-  h1 {
-    font-size: clamp(2.25rem, 11vw, 3.6rem);
+  .hero-grid {
+    gap: 26px;
+    margin-top: 34px;
   }
 
-  .amount-grid,
+  h1 {
+    font-size: clamp(2.12rem, 10.5vw, 3.05rem);
+    line-height: 1.06;
+    margin-bottom: 18px;
+  }
+
+  .lede {
+    font-size: 1rem;
+    line-height: 1.56;
+  }
+
+  .hero-actions {
+    margin-top: 24px;
+  }
+
+  .donation-card {
+    border-radius: 16px;
+    padding: 18px;
+  }
+
+  .card-header h2 {
+    font-size: 1.55rem;
+    line-height: 1.1;
+    margin-bottom: 18px;
+  }
+
+  .amount-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .amount-button {
+    min-height: 70px;
+    padding: 12px;
+    text-align: center;
+  }
+
   .payment-actions,
   .metrics,
   .values {
     grid-template-columns: 1fr;
+  }
+
+  .metrics,
+  .model,
+  .values,
+  .closing {
+    padding: 38px 16px;
+  }
+
+  .business-intro {
+    margin: 44px auto 12px;
+  }
+
+  .section-copy h2,
+  .closing h2 {
+    font-size: clamp(1.9rem, 8vw, 2.55rem);
   }
 
   .flow {
@@ -701,5 +781,39 @@ h1 {
 
   .flow span {
     transform: rotate(90deg);
+  }
+
+  .downloads-grid {
+    gap: 28px;
+    margin-top: 34px;
+  }
+
+  .downloads-copy h1 {
+    font-size: clamp(2.05rem, 10vw, 3rem);
+    line-height: 1.06;
+  }
+
+  .download-lines {
+    margin: 24px 0;
+  }
+
+  .app-preview img {
+    max-height: 480px;
+    max-width: 390px;
+  }
+}
+
+@media (max-width: 420px) {
+  .nav-downloads {
+    font-size: 0.76rem;
+    padding: 8px 10px;
+  }
+
+  .amount-button {
+    font-size: 0.95rem;
+  }
+
+  .amount-button span {
+    font-size: 0.7rem;
   }
 }

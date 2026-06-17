@@ -4,6 +4,12 @@ const MAX_AMOUNT_CENTS = 1000000;
 const CANONICAL_HOST = "www.iacceptdonations.com";
 const APEX_HOST = "iacceptdonations.com";
 
+function getPayPalApiBase(env) {
+  return env.PAYPAL_ENV === "sandbox"
+    ? "https://api-m.sandbox.paypal.com"
+    : "https://api-m.paypal.com";
+}
+
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -37,6 +43,39 @@ function getAmountCents(amount) {
   }
 
   return Math.round(numericAmount * 100);
+}
+
+function getSafeAmountValue(amount) {
+  const amountCents = getAmountCents(amount);
+
+  if (amountCents < MIN_AMOUNT_CENTS || amountCents > MAX_AMOUNT_CENTS) {
+    return "";
+  }
+
+  return (amountCents / 100).toFixed(2);
+}
+
+async function getPayPalAccessToken(env) {
+  if (!env.PAYPAL_CLIENT_ID || !env.PAYPAL_CLIENT_SECRET) {
+    throw new Error("Missing PayPal Worker credentials.");
+  }
+
+  const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${env.PAYPAL_CLIENT_ID}:${env.PAYPAL_CLIENT_SECRET}`)}`,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: "grant_type=client_credentials"
+  });
+
+  const paypalResult = await paypalResponse.json();
+
+  if (!paypalResponse.ok || !paypalResult.access_token) {
+    throw new Error(paypalResult.error_description || "PayPal authentication failed.");
+  }
+
+  return paypalResult.access_token;
 }
 
 async function createStripeCheckoutSession(request, env) {
@@ -94,6 +133,107 @@ async function createStripeCheckoutSession(request, env) {
   return jsonResponse({ url: stripeResult.url }, 200, corsHeaders(request, env));
 }
 
+async function createPayPalOrder(request, env) {
+  let payload;
+
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body." }, 400, corsHeaders(request, env));
+  }
+
+  const amountValue = getSafeAmountValue(payload.amount);
+
+  if (!amountValue) {
+    return jsonResponse({ error: "Donation amount must be between $1 and $10,000." }, 400, corsHeaders(request, env));
+  }
+
+  try {
+    const accessToken = await getPayPalAccessToken(env);
+    const siteUrl = getSiteUrl(request, env);
+    const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v2/checkout/orders`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            description: "A voluntary contribution. You receive nothing, efficiently.",
+            amount: {
+              currency_code: "USD",
+              value: amountValue
+            }
+          }
+        ],
+        application_context: {
+          brand_name: "iAcceptDonations.com",
+          cancel_url: `${siteUrl}/#donate`,
+          return_url: `${siteUrl}/?paypal=approved`,
+          shipping_preference: "NO_SHIPPING",
+          user_action: "PAY_NOW"
+        }
+      })
+    });
+
+    const paypalResult = await paypalResponse.json();
+    const approvalUrl = paypalResult.links?.find((link) => link.rel === "approve")?.href;
+
+    if (!paypalResponse.ok || !approvalUrl) {
+      return jsonResponse(
+        { error: paypalResult.message || "PayPal order creation failed." },
+        502,
+        corsHeaders(request, env)
+      );
+    }
+
+    return jsonResponse({ orderID: paypalResult.id, url: approvalUrl }, 200, corsHeaders(request, env));
+  } catch (error) {
+    return jsonResponse({ error: error.message }, 500, corsHeaders(request, env));
+  }
+}
+
+async function capturePayPalOrder(request, env) {
+  let payload;
+
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body." }, 400, corsHeaders(request, env));
+  }
+
+  if (!payload.orderID) {
+    return jsonResponse({ error: "Missing PayPal order ID." }, 400, corsHeaders(request, env));
+  }
+
+  try {
+    const accessToken = await getPayPalAccessToken(env);
+    const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v2/checkout/orders/${payload.orderID}/capture`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    const paypalResult = await paypalResponse.json();
+
+    if (!paypalResponse.ok) {
+      return jsonResponse(
+        { error: paypalResult.message || "PayPal capture failed." },
+        502,
+        corsHeaders(request, env)
+      );
+    }
+
+    return jsonResponse({ status: paypalResult.status, id: paypalResult.id }, 200, corsHeaders(request, env));
+  } catch (error) {
+    return jsonResponse({ error: error.message }, 500, corsHeaders(request, env));
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -111,6 +251,14 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/api/create-checkout-session") {
       return createStripeCheckoutSession(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/create-paypal-order") {
+      return createPayPalOrder(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/capture-paypal-order") {
+      return capturePayPalOrder(request, env);
     }
 
     return env.ASSETS.fetch(request);
