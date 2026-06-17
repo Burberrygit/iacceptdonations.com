@@ -2,6 +2,7 @@ const amountButtons = document.querySelectorAll(".amount-button");
 const customAmount = document.querySelector("#custom-amount");
 const gratitude = document.querySelector(".gratitude");
 const donateButtons = document.querySelectorAll("[data-provider]");
+const shareVisionButton = document.querySelector(".share-vision-button");
 const toast = document.querySelector(".toast");
 
 const paymentConfig = {
@@ -240,6 +241,30 @@ async function captureApprovedPayPalOrder() {
   }
 }
 
+async function shareVision() {
+  const shareData = {
+    title: "iAcceptDonations.com",
+    text: "I found a startup brave enough to skip the product and accept donations directly.",
+    url: "https://www.iacceptdonations.com"
+  };
+
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+      return;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        return;
+      }
+    }
+  }
+
+  const fallbackUrl = new URL("https://twitter.com/intent/tweet");
+  fallbackUrl.searchParams.set("text", `${shareData.text} ${shareData.url}`);
+  window.open(fallbackUrl.toString(), "_blank", "noopener,noreferrer");
+  showToast("Share draft opened. Please disrupt responsibly.");
+}
+
 donateButtons.forEach((button) => {
   button.addEventListener("click", async () => {
     const provider = button.dataset.provider;
@@ -264,6 +289,8 @@ donateButtons.forEach((button) => {
     window.location.href = url;
   });
 });
+
+shareVisionButton?.addEventListener("click", shareVision);
 
 captureApprovedPayPalOrder();
 

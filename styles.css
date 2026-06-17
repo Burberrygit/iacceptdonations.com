@@ -348,6 +348,11 @@ h1 {
   color: white;
 }
 
+.share-vision-button {
+  margin-top: 10px;
+  width: 100%;
+}
+
 .fine-print {
   color: var(--muted);
   font-size: 0.8rem;
