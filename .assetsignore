@@ -1,0 +1,11 @@
+.git/
+.gitignore
+.assetsignore
+AGENTS.md
+DEPLOYMENT.md
+cloudflare-worker.mjs
+wrangler.toml
+donation-expo-app/
+downloads/*.apk
+assets/garbage.html
+assets/garbage_files/

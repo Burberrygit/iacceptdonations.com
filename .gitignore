@@ -6,3 +6,4 @@ Thumbs.db
 node_modules/
 assets/garbage.html
 assets/garbage_files/
+downloads/*.apk
