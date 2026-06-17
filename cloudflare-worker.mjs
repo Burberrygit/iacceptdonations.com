@@ -1,6 +1,8 @@
 const STRIPE_CHECKOUT_URL = "https://api.stripe.com/v1/checkout/sessions";
 const MIN_AMOUNT_CENTS = 100;
 const MAX_AMOUNT_CENTS = 1000000;
+const CANONICAL_HOST = "www.iacceptdonations.com";
+const APEX_HOST = "iacceptdonations.com";
 
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
@@ -94,18 +96,23 @@ async function createStripeCheckoutSession(request, env) {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if ((request.method === "GET" || request.method === "HEAD") && url.hostname === APEX_HOST) {
+      url.hostname = CANONICAL_HOST;
+      return Response.redirect(url.toString(), 308);
+    }
+
     const headers = corsHeaders(request, env);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers });
     }
 
-    const url = new URL(request.url);
-
     if (request.method === "POST" && url.pathname === "/api/create-checkout-session") {
       return createStripeCheckoutSession(request, env);
     }
 
-    return jsonResponse({ error: "Not found." }, 404, headers);
+    return env.ASSETS.fetch(request);
   }
 };
