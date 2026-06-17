@@ -598,6 +598,10 @@ h1 {
   z-index: 1;
 }
 
+.app-preview-mobile {
+  display: none;
+}
+
 .business-intro {
   margin: 76px auto 20px;
   max-width: 900px;
@@ -786,6 +790,15 @@ h1 {
   .downloads-grid {
     gap: 28px;
     margin-top: 34px;
+  }
+
+  .downloads-grid > .app-preview {
+    display: none;
+  }
+
+  .app-preview-mobile {
+    display: block;
+    margin: 22px auto 4px;
   }
 
   .downloads-copy h1 {
