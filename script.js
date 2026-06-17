@@ -27,6 +27,26 @@ const messages = {
 let selectedAmount = 25;
 let toastTimer;
 
+function trackAnalyticsEvent(eventName, eventParams = {}) {
+  if (typeof window.gtag !== "function") {
+    return;
+  }
+
+  window.gtag("event", eventName, {
+    transport_type: "beacon",
+    ...eventParams
+  });
+}
+
+function trackDonationClick(provider, amount) {
+  trackAnalyticsEvent("donation_click", {
+    event_category: "donations",
+    payment_provider: provider,
+    currency: "USD",
+    value: amount
+  });
+}
+
 function updateGratitude(amount) {
   const numericAmount = Number(amount);
 
@@ -128,6 +148,8 @@ async function openStripeCheckout(button) {
     return;
   }
 
+  trackDonationClick("stripe", amount);
+
   button.disabled = true;
   button.textContent = "Opening Stripe...";
 
@@ -170,6 +192,8 @@ async function openPayPalCheckout(button) {
     showToast("Choose at least $1 before routing generosity through PayPal.");
     return;
   }
+
+  trackDonationClick("paypal", amount);
 
   button.disabled = true;
   button.textContent = "Opening PayPal...";
@@ -242,6 +266,11 @@ async function captureApprovedPayPalOrder() {
 }
 
 async function shareVision() {
+  trackAnalyticsEvent("share_vision_click", {
+    event_category: "engagement",
+    method: navigator.share ? "native_share" : "x_fallback"
+  });
+
   const shareData = {
     title: "iAcceptDonations.com",
     text: "I found a startup brave enough to skip the product and accept donations directly.",

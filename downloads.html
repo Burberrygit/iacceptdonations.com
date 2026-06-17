@@ -8,6 +8,21 @@
       name="description"
       content="Download the regrettably real iAcceptDonations app."
     >
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://www.iacceptdonations.com/downloads.html">
+    <meta property="og:title" content="Download the App | iAcceptDonations.com">
+    <meta
+      property="og:description"
+      content="The app, regrettably real. Because opening a browser tab is basically a marathon."
+    >
+    <meta property="og:image" content="https://www.iacceptdonations.com/assets/cd8bec5d-7315-4aa8-8341-45b030c62050-Photoroom.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Download the App | iAcceptDonations.com">
+    <meta
+      name="twitter:description"
+      content="The app, regrettably real. Because opening a browser tab is basically a marathon."
+    >
+    <meta name="twitter:image" content="https://www.iacceptdonations.com/assets/cd8bec5d-7315-4aa8-8341-45b030c62050-Photoroom.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -83,6 +98,26 @@
           </figure>
         </div>
       </section>
+      <footer class="site-footer" aria-label="Site legal links">
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="donation-disclaimer.html">Donation Disclaimer</a>
+      </footer>
     </main>
+    <script>
+      const downloadButton = document.querySelector(".download-apk-button");
+
+      downloadButton?.addEventListener("click", () => {
+        if (typeof window.gtag !== "function") {
+          return;
+        }
+
+        window.gtag("event", "download_apk", {
+          event_category: "downloads",
+          file_name: "i-accept-donations.apk",
+          link_url: downloadButton.href,
+          transport_type: "beacon"
+        });
+      });
+    </script>
   </body>
 </html>
