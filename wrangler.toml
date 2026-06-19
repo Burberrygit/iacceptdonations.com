@@ -24,3 +24,8 @@ PAYPAL_ENV = "live"
 #
 # Recommended route in Cloudflare:
 # https://www.iacceptdonations.com/api/create-checkout-session
+#
+[[d1_databases]]
+binding = "DB"
+database_name = "iacceptdonations-payments"
+database_id = "eadd2fa8-0b38-4739-b5d7-fa164fc76747"

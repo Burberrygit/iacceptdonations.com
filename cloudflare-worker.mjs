@@ -173,6 +173,138 @@ async function getPayPalAccessToken(env) {
   return paypalResult.access_token;
 }
 
+function hasDatabase(env) {
+  return Boolean(env.DB?.prepare);
+}
+
+function getCentsFromDecimalValue(value) {
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount)) {
+    return 0;
+  }
+
+  return Math.round(amount * 100);
+}
+
+function getStripeEventDetails(event) {
+  const object = event.data?.object || {};
+  const amountCents = object.amount_total || object.amount_received || object.amount || 0;
+  const paymentId = typeof object.payment_intent === "string"
+    ? object.payment_intent
+    : object.id || event.id;
+
+  return {
+    paymentId,
+    amountCents,
+    currency: (object.currency || "usd").toUpperCase(),
+    status: object.payment_status || object.status || event.type,
+    shouldRecordDonation: (
+      event.type === "checkout.session.completed" ||
+      event.type === "payment_intent.succeeded"
+    ) && amountCents > 0
+  };
+}
+
+function getPayPalEventDetails(event) {
+  const resource = event.resource || {};
+  const amount = resource.amount || resource.seller_receivable_breakdown?.gross_amount || {};
+
+  return {
+    paymentId: resource.id || event.id,
+    amountCents: getCentsFromDecimalValue(amount.value),
+    currency: (amount.currency_code || "USD").toUpperCase(),
+    status: resource.status || event.event_type,
+    shouldRecordDonation: event.event_type === "PAYMENT.CAPTURE.COMPLETED"
+  };
+}
+
+async function storeWebhookEvent(env, provider, eventId, eventType, details, payload) {
+  if (!hasDatabase(env)) {
+    console.log("D1 DB binding not configured; verified webhook was not stored.", { provider, eventId, eventType });
+    return { stored: false, duplicate: false };
+  }
+
+  const result = await env.DB.prepare(`
+    INSERT OR IGNORE INTO webhook_events (
+      id,
+      provider,
+      event_type,
+      payment_id,
+      amount_cents,
+      currency,
+      status,
+      payload
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    eventId,
+    provider,
+    eventType,
+    details.paymentId,
+    details.amountCents,
+    details.currency,
+    details.status,
+    payload
+  ).run();
+
+  return {
+    stored: true,
+    duplicate: result.meta?.changes === 0
+  };
+}
+
+async function upsertDonation(env, provider, sourceEventId, details) {
+  await env.DB.prepare(`
+    INSERT INTO donations (
+      id,
+      provider,
+      payment_id,
+      amount_cents,
+      currency,
+      status,
+      source_event_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(provider, payment_id) DO UPDATE SET
+      amount_cents = excluded.amount_cents,
+      currency = excluded.currency,
+      status = excluded.status,
+      source_event_id = excluded.source_event_id,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(
+    `${provider}:${details.paymentId}`,
+    provider,
+    details.paymentId,
+    details.amountCents,
+    details.currency,
+    details.status,
+    sourceEventId
+  ).run();
+}
+
+async function recordStripeWebhookEvent(env, event, payload) {
+  const details = getStripeEventDetails(event);
+  const result = await storeWebhookEvent(env, "stripe", event.id, event.type, details, payload);
+
+  if (result.stored && !result.duplicate && details.shouldRecordDonation) {
+    await upsertDonation(env, "stripe", event.id, details);
+  }
+
+  return result;
+}
+
+async function recordPayPalWebhookEvent(env, event, payload) {
+  const details = getPayPalEventDetails(event);
+  const result = await storeWebhookEvent(env, "paypal", event.id, event.event_type, details, payload);
+
+  if (result.stored && !result.duplicate && details.shouldRecordDonation && details.amountCents > 0) {
+    await upsertDonation(env, "paypal", event.id, details);
+  }
+
+  return result;
+}
+
 async function verifyStripeWebhookSignature(payload, signatureHeader, endpointSecret) {
   if (!signatureHeader || !endpointSecret) {
     return false;
@@ -231,6 +363,20 @@ async function handleStripeWebhook(request, env) {
     return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
   }
 
+  let recordResult;
+
+  try {
+    recordResult = await recordStripeWebhookEvent(env, event, payload);
+  } catch (error) {
+    console.error("Stripe webhook storage failed", { eventId: event.id, error: error.message });
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
+  }
+
+  if (recordResult.duplicate) {
+    console.log("Duplicate Stripe webhook ignored", { id: event.id, type: event.type });
+    return jsonResponse({ received: true, duplicate: true });
+  }
+
   if (event.type === "checkout.session.completed" || event.type === "payment_intent.succeeded") {
     console.log("Stripe payment event verified", {
       id: event.id,
@@ -239,7 +385,7 @@ async function handleStripeWebhook(request, env) {
     });
   }
 
-  return jsonResponse({ received: true });
+  return jsonResponse({ received: true, recorded: recordResult.stored });
 }
 
 function getRequiredPayPalWebhookHeaders(request) {
@@ -310,6 +456,21 @@ async function handlePayPalWebhook(request, env) {
     return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
   }
 
+  let recordResult;
+  const payload = JSON.stringify(event);
+
+  try {
+    recordResult = await recordPayPalWebhookEvent(env, event, payload);
+  } catch (error) {
+    console.error("PayPal webhook storage failed", { eventId: event.id, error: error.message });
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
+  }
+
+  if (recordResult.duplicate) {
+    console.log("Duplicate PayPal webhook ignored", { id: event.id, type: event.event_type });
+    return jsonResponse({ received: true, duplicate: true });
+  }
+
   if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
     console.log("PayPal payment event verified", {
       id: event.id,
@@ -318,7 +479,7 @@ async function handlePayPalWebhook(request, env) {
     });
   }
 
-  return jsonResponse({ received: true });
+  return jsonResponse({ received: true, recorded: recordResult.stored });
 }
 
 async function createStripeCheckoutSession(request, env) {
