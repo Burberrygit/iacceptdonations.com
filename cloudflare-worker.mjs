@@ -3,6 +3,31 @@ const MIN_AMOUNT_CENTS = 100;
 const MAX_AMOUNT_CENTS = 1000000;
 const CANONICAL_HOST = "www.iacceptdonations.com";
 const APEX_HOST = "iacceptdonations.com";
+const API_RATE_LIMIT_WINDOW_MS = 60000;
+const API_RATE_LIMIT_DEFAULT_MAX = 20;
+const API_RATE_LIMIT_CAPTURE_MAX = 10;
+const PAYMENT_UNAVAILABLE_MESSAGE = "Payment checkout is temporarily unavailable. Please try again later.";
+const INVALID_PAYMENT_REQUEST_MESSAGE = "Invalid payment request.";
+const rateLimitBuckets = new Map();
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://static.cloudflareinsights.com",
+    "connect-src 'self' https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://cloudflareinsights.com",
+    "img-src 'self' data: https:",
+    "object-src 'none'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self' https://buy.stripe.com https://www.paypal.com",
+    "upgrade-insecure-requests"
+  ].join("; "),
+  "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "X-Content-Type-Options": "nosniff"
+};
 
 function getPayPalApiBase(env) {
   return env.PAYPAL_ENV === "sandbox"
@@ -14,9 +39,26 @@ function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
+      ...SECURITY_HEADERS,
       "Content-Type": "application/json",
       ...headers
     }
+  });
+}
+
+function withSecurityHeaders(response) {
+  const headers = new Headers(response.headers);
+
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    if (!headers.has(name)) {
+      headers.set(name, value);
+    }
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
   });
 }
 
@@ -33,6 +75,38 @@ function corsHeaders(request, env) {
 
 function getSiteUrl(request, env) {
   return (env.SITE_URL || new URL(request.url).origin).replace(/\/$/, "");
+}
+
+function getClientIdentifier(request) {
+  const forwardedFor = request.headers.get("X-Forwarded-For") || "";
+  const forwardedIp = forwardedFor.split(",")[0]?.trim();
+
+  return request.headers.get("CF-Connecting-IP") || forwardedIp || "unknown";
+}
+
+function isRateLimited(request, pathname, maxRequests) {
+  const now = Date.now();
+  const clientIdentifier = getClientIdentifier(request);
+  const key = `${pathname}:${clientIdentifier}`;
+  const bucket = rateLimitBuckets.get(key);
+
+  if (!bucket || now > bucket.resetAt) {
+    rateLimitBuckets.set(key, {
+      count: 1,
+      resetAt: now + API_RATE_LIMIT_WINDOW_MS
+    });
+    return false;
+  }
+
+  bucket.count += 1;
+
+  return bucket.count > maxRequests;
+}
+
+function getApiRateLimitMax(pathname) {
+  return pathname === "/api/capture-paypal-order"
+    ? API_RATE_LIMIT_CAPTURE_MAX
+    : API_RATE_LIMIT_DEFAULT_MAX;
 }
 
 function getAmountCents(amount) {
@@ -57,7 +131,7 @@ function getSafeAmountValue(amount) {
 
 async function getPayPalAccessToken(env) {
   if (!env.PAYPAL_CLIENT_ID || !env.PAYPAL_CLIENT_SECRET) {
-    throw new Error("Missing PayPal Worker credentials.");
+    throw new Error("PayPal credentials are unavailable.");
   }
 
   const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v1/oauth2/token`, {
@@ -72,7 +146,7 @@ async function getPayPalAccessToken(env) {
   const paypalResult = await paypalResponse.json();
 
   if (!paypalResponse.ok || !paypalResult.access_token) {
-    throw new Error(paypalResult.error_description || "PayPal authentication failed.");
+    throw new Error("PayPal authentication failed.");
   }
 
   return paypalResult.access_token;
@@ -80,7 +154,7 @@ async function getPayPalAccessToken(env) {
 
 async function createStripeCheckoutSession(request, env) {
   if (!env.STRIPE_SECRET_KEY) {
-    return jsonResponse({ error: "Missing STRIPE_SECRET_KEY Worker secret." }, 500, corsHeaders(request, env));
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
   }
 
   let payload;
@@ -88,7 +162,7 @@ async function createStripeCheckoutSession(request, env) {
   try {
     payload = await request.json();
   } catch {
-    return jsonResponse({ error: "Invalid JSON body." }, 400, corsHeaders(request, env));
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
   const amountCents = getAmountCents(payload.amount);
@@ -123,11 +197,7 @@ async function createStripeCheckoutSession(request, env) {
   const stripeResult = await stripeResponse.json();
 
   if (!stripeResponse.ok) {
-    return jsonResponse(
-      { error: stripeResult.error?.message || "Stripe checkout session creation failed." },
-      502,
-      corsHeaders(request, env)
-    );
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
   }
 
   return jsonResponse({ url: stripeResult.url }, 200, corsHeaders(request, env));
@@ -139,7 +209,7 @@ async function createPayPalOrder(request, env) {
   try {
     payload = await request.json();
   } catch {
-    return jsonResponse({ error: "Invalid JSON body." }, 400, corsHeaders(request, env));
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
   const amountValue = getSafeAmountValue(payload.amount);
@@ -182,16 +252,12 @@ async function createPayPalOrder(request, env) {
     const approvalUrl = paypalResult.links?.find((link) => link.rel === "approve")?.href;
 
     if (!paypalResponse.ok || !approvalUrl) {
-      return jsonResponse(
-        { error: paypalResult.message || "PayPal order creation failed." },
-        502,
-        corsHeaders(request, env)
-      );
+      return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
     }
 
     return jsonResponse({ orderID: paypalResult.id, url: approvalUrl }, 200, corsHeaders(request, env));
-  } catch (error) {
-    return jsonResponse({ error: error.message }, 500, corsHeaders(request, env));
+  } catch {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
   }
 }
 
@@ -201,11 +267,11 @@ async function capturePayPalOrder(request, env) {
   try {
     payload = await request.json();
   } catch {
-    return jsonResponse({ error: "Invalid JSON body." }, 400, corsHeaders(request, env));
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
   if (!payload.orderID) {
-    return jsonResponse({ error: "Missing PayPal order ID." }, 400, corsHeaders(request, env));
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
   try {
@@ -221,16 +287,12 @@ async function capturePayPalOrder(request, env) {
     const paypalResult = await paypalResponse.json();
 
     if (!paypalResponse.ok) {
-      return jsonResponse(
-        { error: paypalResult.message || "PayPal capture failed." },
-        502,
-        corsHeaders(request, env)
-      );
+      return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
     }
 
     return jsonResponse({ status: paypalResult.status, id: paypalResult.id }, 200, corsHeaders(request, env));
-  } catch (error) {
-    return jsonResponse({ error: error.message }, 500, corsHeaders(request, env));
+  } catch {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
   }
 }
 
@@ -240,27 +302,45 @@ export default {
 
     if ((request.method === "GET" || request.method === "HEAD") && url.hostname === APEX_HOST) {
       url.hostname = CANONICAL_HOST;
-      return Response.redirect(url.toString(), 308);
+      return new Response(null, {
+        status: 308,
+        headers: {
+          Location: url.toString(),
+          ...SECURITY_HEADERS
+        }
+      });
     }
 
     const headers = corsHeaders(request, env);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers });
+      return new Response(null, { status: 204, headers: { ...SECURITY_HEADERS, ...headers } });
     }
 
     if (request.method === "POST" && url.pathname === "/api/create-checkout-session") {
+      if (isRateLimited(request, url.pathname, getApiRateLimitMax(url.pathname))) {
+        return jsonResponse({ error: "Too many payment requests. Please wait a minute and try again." }, 429, headers);
+      }
+
       return createStripeCheckoutSession(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/create-paypal-order") {
+      if (isRateLimited(request, url.pathname, getApiRateLimitMax(url.pathname))) {
+        return jsonResponse({ error: "Too many payment requests. Please wait a minute and try again." }, 429, headers);
+      }
+
       return createPayPalOrder(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/capture-paypal-order") {
+      if (isRateLimited(request, url.pathname, getApiRateLimitMax(url.pathname))) {
+        return jsonResponse({ error: "Too many payment requests. Please wait a minute and try again." }, 429, headers);
+      }
+
       return capturePayPalOrder(request, env);
     }
 
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   }
 };
