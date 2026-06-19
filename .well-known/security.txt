@@ -1,0 +1,5 @@
+Contact: mailto:security@iacceptdonations.com
+Expires: 2027-06-19T00:00:00Z
+Preferred-Languages: en
+Canonical: https://www.iacceptdonations.com/.well-known/security.txt
+Policy: https://www.iacceptdonations.com/trust-safety.html
