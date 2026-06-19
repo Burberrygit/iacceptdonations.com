@@ -1,4 +1,6 @@
 User-agent: *
 Allow: /
 
+Content-Signal: ai-train=no, ai-input=no, search=yes
+
 Sitemap: https://www.iacceptdonations.com/sitemap.xml
