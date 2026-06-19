@@ -4,6 +4,8 @@ Thumbs.db
 *.log
 .wrangler/
 node_modules/
+SECURITY_AUDIT.md
+security-audit/
 assets/garbage.html
 assets/garbage_files/
 downloads/*.apk
