@@ -6,6 +6,7 @@ const APEX_HOST = "iacceptdonations.com";
 const API_RATE_LIMIT_WINDOW_MS = 60000;
 const API_RATE_LIMIT_DEFAULT_MAX = 20;
 const API_RATE_LIMIT_CAPTURE_MAX = 10;
+const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
 const PAYMENT_UNAVAILABLE_MESSAGE = "Payment checkout is temporarily unavailable. Please try again later.";
 const INVALID_PAYMENT_REQUEST_MESSAGE = "Invalid payment request.";
 const rateLimitBuckets = new Map();
@@ -33,6 +34,26 @@ function getPayPalApiBase(env) {
   return env.PAYPAL_ENV === "sandbox"
     ? "https://api-m.sandbox.paypal.com"
     : "https://api-m.paypal.com";
+}
+
+function hexEncode(buffer) {
+  return [...new Uint8Array(buffer)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function timingSafeEqual(firstValue, secondValue) {
+  if (firstValue.length !== secondValue.length) {
+    return false;
+  }
+
+  let difference = 0;
+
+  for (let index = 0; index < firstValue.length; index += 1) {
+    difference |= firstValue.charCodeAt(index) ^ secondValue.charCodeAt(index);
+  }
+
+  return difference === 0;
 }
 
 function jsonResponse(data, status = 200, headers = {}) {
@@ -150,6 +171,154 @@ async function getPayPalAccessToken(env) {
   }
 
   return paypalResult.access_token;
+}
+
+async function verifyStripeWebhookSignature(payload, signatureHeader, endpointSecret) {
+  if (!signatureHeader || !endpointSecret) {
+    return false;
+  }
+
+  const headerParts = signatureHeader.split(",").reduce((parts, item) => {
+    const [key, value] = item.split("=");
+    parts[key] = value;
+    return parts;
+  }, {});
+  const timestamp = Number(headerParts.t);
+  const signature = headerParts.v1;
+
+  if (!Number.isFinite(timestamp) || !signature) {
+    return false;
+  }
+
+  const nowInSeconds = Math.floor(Date.now() / 1000);
+
+  if (Math.abs(nowInSeconds - timestamp) > STRIPE_WEBHOOK_TOLERANCE_SECONDS) {
+    return false;
+  }
+
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(endpointSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signedPayload = `${timestamp}.${payload}`;
+  const expectedSignature = hexEncode(await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(signedPayload)));
+
+  return timingSafeEqual(expectedSignature, signature);
+}
+
+async function handleStripeWebhook(request, env) {
+  if (!env.STRIPE_WEBHOOK_SECRET) {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
+  }
+
+  const payload = await request.text();
+  const signatureHeader = request.headers.get("Stripe-Signature");
+  const isVerified = await verifyStripeWebhookSignature(payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET);
+
+  if (!isVerified) {
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
+  }
+
+  let event;
+
+  try {
+    event = JSON.parse(payload);
+  } catch {
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
+  }
+
+  if (event.type === "checkout.session.completed" || event.type === "payment_intent.succeeded") {
+    console.log("Stripe payment event verified", {
+      id: event.id,
+      type: event.type,
+      objectId: event.data?.object?.id
+    });
+  }
+
+  return jsonResponse({ received: true });
+}
+
+function getRequiredPayPalWebhookHeaders(request) {
+  return {
+    auth_algo: request.headers.get("PAYPAL-AUTH-ALGO"),
+    cert_url: request.headers.get("PAYPAL-CERT-URL"),
+    transmission_id: request.headers.get("PAYPAL-TRANSMISSION-ID"),
+    transmission_sig: request.headers.get("PAYPAL-TRANSMISSION-SIG"),
+    transmission_time: request.headers.get("PAYPAL-TRANSMISSION-TIME")
+  };
+}
+
+function hasPayPalWebhookHeaders(headers) {
+  return Object.values(headers).every(Boolean);
+}
+
+async function verifyPayPalWebhookSignature(request, env, webhookEvent) {
+  if (!env.PAYPAL_WEBHOOK_ID) {
+    return false;
+  }
+
+  const webhookHeaders = getRequiredPayPalWebhookHeaders(request);
+
+  if (!hasPayPalWebhookHeaders(webhookHeaders)) {
+    return false;
+  }
+
+  const accessToken = await getPayPalAccessToken(env);
+  const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v1/notifications/verify-webhook-signature`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ...webhookHeaders,
+      webhook_id: env.PAYPAL_WEBHOOK_ID,
+      webhook_event: webhookEvent
+    })
+  });
+  const paypalResult = await paypalResponse.json();
+
+  return paypalResponse.ok && paypalResult.verification_status === "SUCCESS";
+}
+
+async function handlePayPalWebhook(request, env) {
+  if (!env.PAYPAL_WEBHOOK_ID) {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
+  }
+
+  let event;
+
+  try {
+    event = await request.json();
+  } catch {
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
+  }
+
+  let isVerified = false;
+
+  try {
+    isVerified = await verifyPayPalWebhookSignature(request, env, event);
+  } catch {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
+  }
+
+  if (!isVerified) {
+    return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400);
+  }
+
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    console.log("PayPal payment event verified", {
+      id: event.id,
+      type: event.event_type,
+      resourceId: event.resource?.id
+    });
+  }
+
+  return jsonResponse({ received: true });
 }
 
 async function createStripeCheckoutSession(request, env) {
@@ -339,6 +508,14 @@ export default {
       }
 
       return capturePayPalOrder(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/stripe-webhook") {
+      return handleStripeWebhook(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/paypal-webhook") {
+      return handlePayPalWebhook(request, env);
     }
 
     return withSecurityHeaders(await env.ASSETS.fetch(request));

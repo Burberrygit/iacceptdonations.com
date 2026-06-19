@@ -17,8 +17,10 @@ PAYPAL_ENV = "live"
 
 # Set this as a Worker secret, not in this file:
 # wrangler secret put STRIPE_SECRET_KEY
+# wrangler secret put STRIPE_WEBHOOK_SECRET
 # wrangler secret put PAYPAL_CLIENT_ID
 # wrangler secret put PAYPAL_CLIENT_SECRET
+# wrangler secret put PAYPAL_WEBHOOK_ID
 #
 # Recommended route in Cloudflare:
 # https://www.iacceptdonations.com/api/create-checkout-session
