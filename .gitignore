@@ -2,6 +2,9 @@ donation-expo-app/
 .DS_Store
 Thumbs.db
 *.log
+.env
+.env.*
+!.env.example
 .wrangler/
 node_modules/
 SECURITY_AUDIT.md

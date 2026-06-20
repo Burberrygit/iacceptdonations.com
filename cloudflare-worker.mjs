@@ -7,9 +7,25 @@ const API_RATE_LIMIT_WINDOW_MS = 60000;
 const API_RATE_LIMIT_DEFAULT_MAX = 20;
 const API_RATE_LIMIT_CAPTURE_MAX = 10;
 const STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300;
+const PAYPAL_ORDER_ID_PATTERN = /^[A-Z0-9]{10,32}$/;
 const PAYMENT_UNAVAILABLE_MESSAGE = "Payment checkout is temporarily unavailable. Please try again later.";
 const INVALID_PAYMENT_REQUEST_MESSAGE = "Invalid payment request.";
 const rateLimitBuckets = new Map();
+const BLOCKED_PUBLIC_PATHS = [
+  "/.env",
+  "/.git",
+  "/.wrangler",
+  "/AGENTS.md",
+  "/cloudflare-worker.mjs",
+  "/DEPLOYMENT.md",
+  "/migrations",
+  "/node_modules",
+  "/package-lock.json",
+  "/package.json",
+  "/security-audit",
+  "/tests",
+  "/wrangler.toml"
+].map((item) => item.toLowerCase());
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
     "default-src 'self'",
@@ -56,6 +72,18 @@ function timingSafeEqual(firstValue, secondValue) {
   return difference === 0;
 }
 
+function redactIdentifier(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+
+  if (value.length <= 10) {
+    return `${value.slice(0, 2)}...`;
+  }
+
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
 function jsonResponse(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -81,6 +109,27 @@ function withSecurityHeaders(response) {
     statusText: response.statusText,
     headers
   });
+}
+
+function notFoundResponse() {
+  return new Response(null, {
+    status: 404,
+    headers: SECURITY_HEADERS
+  });
+}
+
+export function isBlockedPublicPath(pathname) {
+  const normalizedPath = pathname.toLowerCase();
+
+  return (
+    BLOCKED_PUBLIC_PATHS.some((blockedPath) => (
+      normalizedPath === blockedPath ||
+      normalizedPath.startsWith(`${blockedPath}/`)
+    )) ||
+    normalizedPath.endsWith(".log") ||
+    normalizedPath.endsWith(".map") ||
+    normalizedPath.endsWith(".sql")
+  );
 }
 
 function corsHeaders(request, env) {
@@ -148,6 +197,16 @@ function getSafeAmountValue(amount) {
   }
 
   return (amountCents / 100).toFixed(2);
+}
+
+export function getSafePayPalOrderId(orderID) {
+  if (typeof orderID !== "string") {
+    return "";
+  }
+
+  const trimmedOrderId = orderID.trim();
+
+  return PAYPAL_ORDER_ID_PATTERN.test(trimmedOrderId) ? trimmedOrderId : "";
 }
 
 async function getPayPalAccessToken(env) {
@@ -219,9 +278,123 @@ function getPayPalEventDetails(event) {
   };
 }
 
+function getPayPalOrderAmount(order) {
+  const amount = order.purchase_units?.[0]?.amount || {};
+
+  return {
+    amountCents: getCentsFromDecimalValue(amount.value),
+    currency: (amount.currency_code || "").toUpperCase()
+  };
+}
+
+function getExpectedPayPalRecipient(env) {
+  if (env.PAYPAL_MERCHANT_ID) {
+    return {
+      field: "merchant_id",
+      value: env.PAYPAL_MERCHANT_ID
+    };
+  }
+
+  if (env.PAYPAL_RECEIVER_EMAIL) {
+    return {
+      field: "email_address",
+      value: env.PAYPAL_RECEIVER_EMAIL.toLowerCase()
+    };
+  }
+
+  return null;
+}
+
+export function validatePayPalOrderDetails(order, expectedOrder, env = {}) {
+  if (!order || !expectedOrder || order.id !== expectedOrder.order_id || order.intent !== "CAPTURE") {
+    return false;
+  }
+
+  const amount = getPayPalOrderAmount(order);
+
+  if (
+    amount.amountCents !== expectedOrder.amount_cents ||
+    amount.currency !== expectedOrder.currency
+  ) {
+    return false;
+  }
+
+  const expectedRecipient = getExpectedPayPalRecipient(env);
+
+  if (expectedRecipient) {
+    const payee = order.purchase_units?.[0]?.payee || {};
+    const actualRecipient = expectedRecipient.field === "email_address"
+      ? payee.email_address?.toLowerCase()
+      : payee.merchant_id;
+
+    if (actualRecipient !== expectedRecipient.value) {
+      return false;
+    }
+  }
+
+  return order.status === "APPROVED" || order.status === "COMPLETED";
+}
+
+export function getPayPalCaptureDetails(captureResult) {
+  const capture = captureResult?.purchase_units
+    ?.flatMap((unit) => unit.payments?.captures || [])
+    ?.find((item) => item.status === "COMPLETED");
+
+  if (!capture) {
+    return null;
+  }
+
+  return {
+    captureId: capture.id,
+    amountCents: getCentsFromDecimalValue(capture.amount?.value),
+    currency: (capture.amount?.currency_code || "").toUpperCase(),
+    status: capture.status
+  };
+}
+
+async function storePayPalOrder(env, orderId, amountCents, currency) {
+  await env.DB.prepare(`
+    INSERT INTO paypal_orders (
+      order_id,
+      amount_cents,
+      currency,
+      status
+    )
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(order_id) DO UPDATE SET
+      amount_cents = excluded.amount_cents,
+      currency = excluded.currency,
+      status = excluded.status,
+      capture_id = NULL,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(orderId, amountCents, currency, "CREATED").run();
+}
+
+async function getPayPalOrderRecord(env, orderId) {
+  return env.DB.prepare(`
+    SELECT order_id, amount_cents, currency, status, capture_id
+    FROM paypal_orders
+    WHERE order_id = ?
+  `).bind(orderId).first();
+}
+
+async function markPayPalOrderCaptured(env, orderId, captureId) {
+  await env.DB.prepare(`
+    UPDATE paypal_orders
+    SET status = ?,
+        capture_id = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE order_id = ?
+  `).bind("COMPLETED", captureId, orderId).run();
+}
+
 async function storeWebhookEvent(env, provider, eventId, eventType, details, payload) {
   if (!hasDatabase(env)) {
-    console.log("D1 DB binding not configured; verified webhook was not stored.", { provider, eventId, eventType });
+    console.log("D1 DB binding not configured; verified webhook was not stored.", {
+      provider,
+      eventId: redactIdentifier(eventId),
+      eventType
+    });
     return { stored: false, duplicate: false };
   }
 
@@ -368,20 +541,20 @@ async function handleStripeWebhook(request, env) {
   try {
     recordResult = await recordStripeWebhookEvent(env, event, payload);
   } catch (error) {
-    console.error("Stripe webhook storage failed", { eventId: event.id, error: error.message });
+    console.error("Stripe webhook storage failed", { eventId: redactIdentifier(event.id), error: error.message });
     return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
   }
 
   if (recordResult.duplicate) {
-    console.log("Duplicate Stripe webhook ignored", { id: event.id, type: event.type });
+    console.log("Duplicate Stripe webhook ignored", { id: redactIdentifier(event.id), type: event.type });
     return jsonResponse({ received: true, duplicate: true });
   }
 
   if (event.type === "checkout.session.completed" || event.type === "payment_intent.succeeded") {
     console.log("Stripe payment event verified", {
-      id: event.id,
+      id: redactIdentifier(event.id),
       type: event.type,
-      objectId: event.data?.object?.id
+      objectId: redactIdentifier(event.data?.object?.id)
     });
   }
 
@@ -462,20 +635,20 @@ async function handlePayPalWebhook(request, env) {
   try {
     recordResult = await recordPayPalWebhookEvent(env, event, payload);
   } catch (error) {
-    console.error("PayPal webhook storage failed", { eventId: event.id, error: error.message });
+    console.error("PayPal webhook storage failed", { eventId: redactIdentifier(event.id), error: error.message });
     return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500);
   }
 
   if (recordResult.duplicate) {
-    console.log("Duplicate PayPal webhook ignored", { id: event.id, type: event.event_type });
+    console.log("Duplicate PayPal webhook ignored", { id: redactIdentifier(event.id), type: event.event_type });
     return jsonResponse({ received: true, duplicate: true });
   }
 
   if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
     console.log("PayPal payment event verified", {
-      id: event.id,
+      id: redactIdentifier(event.id),
       type: event.event_type,
-      resourceId: event.resource?.id
+      resourceId: redactIdentifier(event.resource?.id)
     });
   }
 
@@ -534,6 +707,10 @@ async function createStripeCheckoutSession(request, env) {
 }
 
 async function createPayPalOrder(request, env) {
+  if (!hasDatabase(env)) {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
+  }
+
   let payload;
 
   try {
@@ -543,6 +720,7 @@ async function createPayPalOrder(request, env) {
   }
 
   const amountValue = getSafeAmountValue(payload.amount);
+  const amountCents = getAmountCents(payload.amount);
 
   if (!amountValue) {
     return jsonResponse({ error: "Donation amount must be between $1 and $10,000." }, 400, corsHeaders(request, env));
@@ -585,6 +763,8 @@ async function createPayPalOrder(request, env) {
       return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
     }
 
+    await storePayPalOrder(env, paypalResult.id, amountCents, "USD");
+
     return jsonResponse({ orderID: paypalResult.id, url: approvalUrl }, 200, corsHeaders(request, env));
   } catch {
     return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
@@ -592,6 +772,10 @@ async function createPayPalOrder(request, env) {
 }
 
 async function capturePayPalOrder(request, env) {
+  if (!hasDatabase(env)) {
+    return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
+  }
+
   let payload;
 
   try {
@@ -600,13 +784,49 @@ async function capturePayPalOrder(request, env) {
     return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
-  if (!payload.orderID) {
+  const orderID = getSafePayPalOrderId(payload.orderID);
+
+  if (!orderID) {
     return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
   }
 
   try {
+    const expectedOrder = await getPayPalOrderRecord(env, orderID);
+
+    if (!expectedOrder) {
+      return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
+    }
+
+    if (expectedOrder.status === "COMPLETED" && expectedOrder.capture_id) {
+      return jsonResponse({ status: "COMPLETED", id: expectedOrder.capture_id }, 200, corsHeaders(request, env));
+    }
+
     const accessToken = await getPayPalAccessToken(env);
-    const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v2/checkout/orders/${payload.orderID}/capture`, {
+    const orderResponse = await fetch(`${getPayPalApiBase(env)}/v2/checkout/orders/${orderID}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+    const orderResult = await orderResponse.json();
+
+    if (!orderResponse.ok || !validatePayPalOrderDetails(orderResult, expectedOrder, env)) {
+      console.warn("PayPal order validation failed before capture", {
+        orderId: redactIdentifier(orderID),
+        status: orderResult?.status
+      });
+      return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
+    }
+
+    const existingCapture = getPayPalCaptureDetails(orderResult);
+
+    if (existingCapture) {
+      await markPayPalOrderCaptured(env, orderID, existingCapture.captureId);
+      return jsonResponse({ status: existingCapture.status, id: existingCapture.captureId }, 200, corsHeaders(request, env));
+    }
+
+    const paypalResponse = await fetch(`${getPayPalApiBase(env)}/v2/checkout/orders/${orderID}/capture`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -620,7 +840,29 @@ async function capturePayPalOrder(request, env) {
       return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
     }
 
-    return jsonResponse({ status: paypalResult.status, id: paypalResult.id }, 200, corsHeaders(request, env));
+    const captureDetails = getPayPalCaptureDetails(paypalResult);
+
+    if (!captureDetails) {
+      return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 502, corsHeaders(request, env));
+    }
+
+    if (
+      captureDetails.amountCents !== expectedOrder.amount_cents ||
+      captureDetails.currency !== expectedOrder.currency
+    ) {
+      console.warn("PayPal capture amount validation failed", { orderId: redactIdentifier(orderID) });
+      return jsonResponse({ error: INVALID_PAYMENT_REQUEST_MESSAGE }, 400, corsHeaders(request, env));
+    }
+
+    await markPayPalOrderCaptured(env, orderID, captureDetails.captureId);
+    await upsertDonation(env, "paypal", `capture:${orderID}`, {
+      paymentId: captureDetails.captureId,
+      amountCents: captureDetails.amountCents,
+      currency: captureDetails.currency,
+      status: captureDetails.status
+    });
+
+    return jsonResponse({ status: captureDetails.status, id: captureDetails.captureId }, 200, corsHeaders(request, env));
   } catch {
     return jsonResponse({ error: PAYMENT_UNAVAILABLE_MESSAGE }, 500, corsHeaders(request, env));
   }
@@ -639,6 +881,10 @@ export default {
           ...SECURITY_HEADERS
         }
       });
+    }
+
+    if ((request.method === "GET" || request.method === "HEAD") && isBlockedPublicPath(url.pathname)) {
+      return notFoundResponse();
     }
 
     const headers = corsHeaders(request, env);

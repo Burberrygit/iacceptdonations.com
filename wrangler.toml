@@ -21,6 +21,8 @@ PAYPAL_ENV = "live"
 # wrangler secret put PAYPAL_CLIENT_ID
 # wrangler secret put PAYPAL_CLIENT_SECRET
 # wrangler secret put PAYPAL_WEBHOOK_ID
+# Optional but recommended recipient check:
+# PAYPAL_MERCHANT_ID = "your PayPal merchant ID"
 #
 # Recommended route in Cloudflare:
 # https://www.iacceptdonations.com/api/create-checkout-session
